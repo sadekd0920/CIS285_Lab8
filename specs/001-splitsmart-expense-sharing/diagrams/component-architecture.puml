@@ -1,0 +1,51 @@
+@startuml
+title Selected Architecture 1 - Local MVP and Separate Full Product
+left to right direction
+skinparam componentStyle rectangle
+
+package "Lab 7 desktop MVP" {
+  [Swing Presentation] as Swing
+  [Application Use Cases] as App
+  [Domain Model and Policies] as Domain
+  database "Local SQLite" as SQLite
+  [Local Outbox Dispatcher and Inbox] as LocalNotify
+
+  Swing --> App : commands / queries
+  App --> Domain : enforce rules
+  App --> SQLite : atomic entity / posting / receipt / outbox writes
+  LocalNotify --> SQLite : claim work / recheck membership / deduplicate
+}
+
+package "Complete product (separate delivery scope)" {
+  [Web Client] as Web
+  [Android App] as Android
+  [iOS App] as IOS
+  [Versioned REST API] as API
+  [Shared Application and Domain] as SharedCore
+  database "PostgreSQL" as Postgres
+  cloud "Private Receipt Storage" as Receipts
+  [Notification Outbox and Worker] as Worker
+  [Email / Push / In-app Providers] as Providers
+
+  Web --> API : HTTPS / JSON
+  Android --> API : HTTPS / JSON
+  IOS --> API : HTTPS / JSON
+  API --> SharedCore : authorized use cases
+  SharedCore --> Postgres : atomic repositories / receipts / pair guards / outbox
+  SharedCore --> Receipts : authorized receipt port
+  Worker --> Postgres : claim outbox / recheck access / retry
+  Worker --> Providers : retryable delivery
+}
+
+note bottom of Swing
+Desktop only; local data is not
+shared across devices. Does not
+satisfy FR-012.
+end note
+note bottom of API
+Web, Android, and iOS are required
+customer platforms, not part of
+the desktop MVP. No Event Sourcing
+or CQRS is selected.
+end note
+@enduml

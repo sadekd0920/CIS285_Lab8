@@ -1,0 +1,67 @@
+@startuml
+title Selected Architecture 1 - Expense Submission and Approval
+start
+:Authenticate submitter;
+:Begin write transaction; acquire group access guard;
+:Validate current membership, participants,
+explicit payer, positive precise amount,
+date, description, exact split and optional receipt;
+if (Valid?) then (yes)
+  :Save PENDING_REVIEW, exact allocations,
+captured policy version and receipt metadata;
+  :Insert outbox and eligible other-member candidates;
+  :Commit submission; balances unchanged;
+else (no)
+  :Roll back; return field/action errors;
+  stop
+endif
+:After commit, dispatcher retries notices;
+note right
+  Local SQLite inbox for MVP.
+  Full product outbox worker.
+  Recheck current access and skip removed recipients.
+  Unique inbox records; delivery failure never undoes expense.
+end note
+while (Expense still pending?) is (yes)
+  :Await reviewer request outside transaction;
+  :Authenticate; begin new write transaction;
+  :Acquire group guard and recheck current access;
+  if (Authorized?) then (yes)
+    :Reserve or load scoped OperationReceipt;
+  else (no)
+    :Roll back; deny request;
+    stop
+  endif
+  if (Accepted receipt exists?) then (yes)
+    if (Request hash matches?) then (yes)
+      :End transaction; return saved decision;
+    else (no)
+      :Roll back; return idempotency conflict;
+    endif
+  else (no)
+    :Lock expense; reload state;
+    :Validate captured policy, eligible reviewer,
+level, self-review rule and pending state;
+    if (Valid new decision?) then (yes)
+      :Insert immutable decision;
+      if (Reject?) then (yes)
+        :Set REJECTED; save OperationReceipt;
+        :Commit without ledger postings;
+        stop
+      else (approve)
+        if (All required approvals complete?) then (yes)
+          :Acquire affected pair guards in sorted order;
+          :Set APPROVED and append unique nonzero
+non-payer debt postings to explicit payer;
+        endif
+        :Save OperationReceipt;
+        :Commit decision, state, postings and receipt together;
+      endif
+    else (no)
+      :Roll back; return validation or state conflict;
+    endif
+  endif
+endwhile (no)
+:Read committed expense and balances;
+stop
+@enduml

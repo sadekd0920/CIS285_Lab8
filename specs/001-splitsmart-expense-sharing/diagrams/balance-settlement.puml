@@ -1,0 +1,45 @@
+@startuml
+title Selected Architecture 1 - Atomic Payment Settlement
+start
+:Authenticate debtor and display authorized balance;
+:Enter group, payee, currency, amount,
+payment date and stable request ID;
+:Begin transaction;
+note right
+  SQLite: BEGIN IMMEDIATE before reads.
+  PostgreSQL: READ COMMITTED;
+  shared group access guard first.
+end note
+:Recheck current membership and actor/debtor identity;
+if (Authorized?) then (yes)
+  :Reserve or load scoped OperationReceipt;
+else (no)
+  :Roll back; deny access;
+  stop
+endif
+if (Accepted receipt exists?) then (yes)
+  if (Request hash matches?) then (yes)
+    :End transaction; return original payment result;
+  else (no)
+    :Roll back; return idempotency conflict;
+  endif
+  stop
+endif
+:Acquire stable directional debt-pair guard
+in PostgreSQL; SQLite write lock already held;
+:Calculate latest debt from committed
+approved postings minus payment offsets;
+:Validate distinct accounts, currency,
+positive amount, date and precision;
+if (Valid and amount <= latest outstanding?) then (yes)
+  :Insert immutable Payment exactly once;
+  :Append unique payment offset posting;
+  :Save accepted OperationReceipt;
+  :Commit payment, posting and receipt together;
+  :Return payment ID and committed financial result;
+else (no)
+  :Roll back; return actionable error;
+  :Leave payment history and ledger unchanged;
+endif
+stop
+@enduml

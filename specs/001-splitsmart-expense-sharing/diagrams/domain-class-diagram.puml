@@ -1,0 +1,184 @@
+@startuml
+title Selected Architecture 1 - Domain and Application Safeguards
+skinparam classAttributeIconSize 0
+
+class Account {
+  +accountId: AccountId
+  +email: EmailAddress
+  -credentialHash: String
+  +status: AccountStatus
+}
+
+class Group {
+  +groupId: GroupId
+  +name: String
+  +currencyCode: CurrencyCode
+  +status: GroupStatus
+}
+
+class GroupMembership {
+  +role: MembershipRole
+  +status: MembershipStatus
+  +joinedAt: Instant
+  +removedAt: Instant
+}
+
+class ApprovalPolicy {
+  +policyId: PolicyId
+  +version: int
+  +selfApprovalAllowed: boolean
+}
+
+class Expense {
+  +expenseId: ExpenseId
+  +description: String
+  +amount: BigDecimal
+  +currencyCode: CurrencyCode
+  +expenseDate: LocalDate
+  +splitMethod: SplitMethod
+  +status: ExpenseStatus
+}
+
+class ExpenseAllocation {
+  +inputPercentage: BigDecimal
+  +shareAmount: BigDecimal
+  +remainderRank: int
+}
+
+class ApprovalDecision {
+  +level: int
+  +decision: Decision
+  +decidedAt: Instant
+}
+
+class Receipt {
+  +receiptId: ReceiptId
+  +mediaType: String
+  +byteLength: long
+  +objectKey: String
+}
+
+class LedgerPosting {
+  +postingId: PostingId
+  +amount: BigDecimal
+  +currencyCode: CurrencyCode
+  +effectiveAt: Instant
+  +postingType: PostingType
+}
+
+class Payment {
+  +paymentId: PaymentId
+  +amount: BigDecimal
+  +currencyCode: CurrencyCode
+  +paidAt: Instant
+  +idempotencyKey: String
+}
+
+class Notification {
+  +notificationId: NotificationId
+  +type: String
+  +deliveryState: DeliveryState
+}
+
+class BalanceQuery <<derived view>> {
+  +outstanding(debtor, creditor, currency): BigDecimal
+}
+
+class OperationReceipt {
+  +actorId: AccountId
+  +operation: String
+  +targetId: String
+  +idempotencyKey: String
+  +requestHash: String
+  +resultId: String
+}
+class DebtPairGuard <<PostgreSQL lock only>> {
+  +groupId: GroupId
+  +currencyCode: CurrencyCode
+  +debtorId: AccountId
+  +creditorId: AccountId
+}
+class OutboxMessage {
+  +messageId: MessageId
+  +status: DeliveryState
+  +attempts: int
+}
+class NotificationDelivery {
+  +recipientId: AccountId
+  +channel: String
+  +status: DeliveryState
+}
+class ExpenseService {
+  +submit(actor, request): Expense
+  +decide(actor, requestId, decision): Result
+}
+class PaymentService {
+  +record(actor, requestId, request): Result
+}
+interface TransactionRunner {
+  +runAtomically(work): Result
+}
+interface AuthorizationPort {
+  +requireCurrentAccess(actor, target): void
+}
+interface LedgerRepository {
+  +outstanding(pair): BigDecimal
+  +appendUnique(posting): void
+}
+
+Account "1" -- "0..*" GroupMembership
+Group "1" -- "0..*" GroupMembership
+Group "1" -- "0..*" Expense
+Group "1" -- "1..*" ApprovalPolicy
+Expense "1" --> "1" Account : submittedBy
+Expense "1" --> "1" Account : payer
+Expense "1" --> "1" ApprovalPolicy : policyVersion
+Expense "1" *-- "1..*" ExpenseAllocation
+ExpenseAllocation "*" --> "1" Account : participant
+Expense "1" *-- "0..1" Receipt
+Expense "1" *-- "0..*" ApprovalDecision
+ApprovalDecision "*" --> "1" Account : reviewer
+Expense "1" --> "0..*" LedgerPosting : approval creates once
+Payment "1" --> "1" Account : debtor
+Payment "1" --> "1" Account : creditor
+Payment "1" --> "1" LedgerPosting : unique offset
+Group "1" --> "0..*" Payment
+Account "1" --> "0..*" Notification : recipient
+Expense "1" --> "0..*" Notification
+LedgerPosting ..> BalanceQuery : aggregated by pair
+Expense "1" --> "1" OutboxMessage : submission commits with
+OutboxMessage "1" *-- "0..*" NotificationDelivery
+NotificationDelivery "1" --> "0..1" Notification : unique inbox item
+NotificationDelivery --> Account : current eligible recipient
+ExpenseService --> TransactionRunner
+PaymentService --> TransactionRunner
+ExpenseService --> AuthorizationPort
+PaymentService --> AuthorizationPort
+ExpenseService --> LedgerRepository
+PaymentService --> LedgerRepository
+ExpenseService --> Expense
+PaymentService --> Payment
+ExpenseService --> OperationReceipt
+PaymentService --> OperationReceipt
+ExpenseService ..> DebtPairGuard : sorted affected pairs
+PaymentService ..> DebtPairGuard : latest-debt serialization
+
+note right of Expense
+  APPROVED only after all required
+  decisions; rejected/pending expenses
+  have no ledger postings.
+end note
+note bottom of ExpenseAllocation
+  Final shares reconcile exactly to
+  expense amount using BigDecimal.
+end note
+note bottom of OperationReceipt
+  Unique actor / operation / target / key.
+  Authorize first, then return identical retry
+  before mutable debt or state validation.
+end note
+note bottom of DebtPairGuard
+  No stored balance or CQRS projection.
+  SQLite uses BEGIN IMMEDIATE instead.
+end note
+@enduml
